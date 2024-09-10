@@ -4,8 +4,14 @@
 main causalflow module 
 
 
+# todo
+- if we want to implement inverse CDF, the easiest solution will probably be to
+  implement a tailored flow class, where all the functions inverse CDF and CDF
+  transform the data. 
+
 '''
 import numpy as np 
+import warnings
 
 import torch
 from torch import nn
@@ -23,7 +29,7 @@ class BaseCausalFlow(object):
         else:
             self.device = device
 
-    def train_flow(self, Y, X, outcome_range=[None, None], inverse_cdf=False,
+    def _train_flow(self, Y, X, outcome_range=[None, None], inverse_cdf=False,
                    nde=None, training_batch_size=50, learning_rate=5e-4,
                    verbose=False): 
         ''' Train a normalizing flow by providing the outcome, Y, and
@@ -129,12 +135,130 @@ class BaseCausalFlow(object):
 
 
 class CausalFlowA(BaseCausalFlow): 
-    def __init__(self, ): 
+    def __init__(self, device=None): 
         ''' CausalFlow for Scenario A, where you're using flows to estimate
-        both $p( Y | X, T=1 )$ and $p( Y | X, T=0 )$
-        '''
+        both $p( Y | X, T=1 )$ and $p( Y | X, T=0 )$.
 
-        super().__init__()
+        explain scenario A
+
+        explain the algorithm 
+        
+        explain how to use it 
+
+
+        Notes: 
+        * Either train the treated/control flows or load them. 
+        '''
+        self.flow_treated = None # flow estimating p( Y | X, T=1 )
+        self.flow_control = None # flow estimating p( Y | X, T=0 )
+
+        super().__init__(device=device)
+    
+    def CATE(self, X, Nsample=10000, progress_bar=False): 
+        ''' evaluate the conditional average treatment effect for a given
+        covariate value, X
+
+
+        CATE = int Y p(Y|X,T=1) dY - int Y p(Y|X,T=0) dY
+
+        args: 
+            X: 1D array with D_x dimensions. The given covariate value to
+                estimate the CATE. 
+        
+        kwargs: 
+            Nsample: int, the number of samples used for the Monte Carlo
+                integration estimates
+        '''
+        # sample p( Y | X, T=1 ) 
+        Ys_treated = self._sample(self.flow_treated, X, Nsample=Nsample,
+                                  progress_bar=progress_bar)
+        # sample p( Y | X, T=0 ) 
+        Ys_control = self._sample(self.flow_control, X, Nsample=Nsample,
+                                  progress_bar=progress_bar)
+        # estimate the cate 
+        cate = np.mean(Ys_treated) - np.mean(Ys_control) 
+        return cate
+    
+    def train_flow_treated(self, Y_treat, X_treat, **kwargs):
+        ''' Train a flow for the treated sample to estimate p( Y | X, T=1 ).
+        This is a wrapper for self._train_flow. See self._train_flow for
+        documentation and detail on training. 
+        '''
+        if self.flow_treated is not None: 
+            warnings.warn("Overwriting existing flow_treated. clt+c if you
+                          don't want to do this")
+
+        self.flow_treated = self._train_flow(self, Y_treat, X_treat, **kwargs) 
+        return None  
+    
+    def train_flow_control(self, Y_cont, X_cont, **kwargs):
+        ''' Train a flow for the treated sample to estimate p( Y | X, T=0 ). 
+        This is a wrapper for self._train_flow. See self._train_flow for
+        documentation and detail on training. 
+        '''
+        if self.flow_control is not None: 
+            warnings.warn("Overwriting existing flow_treated. clt+c if you
+                          don't want to do this")
+
+        self.flow_control = self._train_flow(self, Y_cont, X_cont, **kwargs) 
+        return None  
+
+    def load_flow_treated(self, _dir, n_ensemble=5, flow_name=None): 
+        ''' load flow that estimates p( Y | X, T=1 ), given either a directory
+        or filename of the flow. By default it will load an ensemble of
+        flows based on an optuna study. 
+
+        args: 
+            _dir: string specifying the directory path of the treated flows  
+
+        kwargs: 
+            n_ensemble: (int) specifying the number of flows in the ensemble. 
+            flow_name: (str) specify the filename of the flow. If `flow_name`
+                is specified, it will read that flow. 
+        '''
+        self.flow_treated = self._load_flow(_dir, n_ensemble=5, flow_name=None)
+        return None 
+
+    def load_flow_control(self, _dir, n_ensemble=5, flow_name=None): 
+        ''' load flow that estimates p( Y | X, T=0 ), given either a directory
+        or filename of the flow. By default it will load an ensemble of
+        flows based on an optuna study. 
+
+        args: 
+            _dir: string specifying the directory path of the control flows  
+
+        kwargs: 
+            n_ensemble: (int) specifying the number of flows in the ensemble. 
+            flow_name: (str) specify the filename of the flow. If `flow_name`
+                is specified, it will read that flow. 
+        '''
+        self.flow_treated = self._load_flow(_dir, n_ensemble=5, flow_name=None)
+        return None 
+
+    def _sample(self, flow, X, Nsample=10000, progress_bar=False):
+        ''' sample given flow at given covariate X: Y' ~ flow( Y | X ). This is
+        used for calculating the conditional average treatment effect but can
+        also be used to examine the overall distribution of outcomes for the
+        given flow. 
+
+        args: 
+            flow: flow object  
+            X: D_x 1D array specifying the covariate values to sample and
+                evaluate
+        
+        kwargs: 
+            Nsample: int, specifying the number of samples to draw. More samples
+                will increase the fidelity of estimating the outcome
+                distribution. 
+            progress_bar: bool, If True it will show a nice progress bar so it
+                looks like it's doing something
+        '''
+        # sample the flow 
+        Yp = flow.sample((Nsample,), 
+                         x=torch.as_tensor(X).to(self.device), # specify covariate
+                         show_progress_bars=progress_bar)
+        Yp = Yp.detach().cpu().numpy()
+        return Yp
 
 
 class CausalFlowB(BaseCausalFlow): 

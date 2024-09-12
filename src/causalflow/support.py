@@ -5,13 +5,13 @@ module for checking support
 
 '''
 import numpy as np 
-import warning 
 
 import copy
 import torch
 from nflows import transforms, distributions, flows
 from torch import optim
 from torch.nn.utils.clip_grad import clip_grad_norm_
+from tqdm.auto import tqdm
 
 
 class Support(object): 
@@ -24,15 +24,16 @@ class Support(object):
             self.device = device
 
         self.flow_support = None 
+        self._flow = None 
     
-    def check_support(self, X, nsample=10000, threshold=0.95): 
+    def check_support(self, X, Nsample=10000, threshold=0.95): 
         ''' check support for covariates X
 
         args: 
             X: NxD_x dimensional array
 
         kwargs: 
-            nsample: int specifying the number of samples.
+            Nsample: int specifying the number of samples.
 
             threshold: float between [0, 1], specifying the threshold. 
         '''
@@ -45,9 +46,9 @@ class Support(object):
         # check support
         with torch.no_grad(): 
             logpX = np.array(self.flow_support.log_prob(
-                torch.tensor(X, dtype=torch.float32).to(device)).detach().cpu())
+                torch.tensor(X, dtype=torch.float32).to(self.device)).detach().cpu())
                 
-            _, logps = self.flow_support.sample_and_log_prob(nsample)
+            _, logps = self.flow_support.sample_and_log_prob(Nsample)
             logps = np.array(logps.detach().cpu())
         
         support = np.zeros(X.shape[0])
@@ -56,12 +57,12 @@ class Support(object):
             
         return (support < threshold)
 
-    def train_support_flow(self, X, inverse_cdf=False,
-                            flow=None, batch_size=50, learning_rate=5e-4,
-                            clip_max_norm=5, verbose=False): 
+    def train(self, X, inverse_cdf=False, batch_size=50,
+              learning_rate=5e-4, num_iter=300, clip_max_norm=5,
+              verbose=False): 
         ''' Train a normalizing flow by providing the outcome, Y, and
-        covariates, X. This function is a wrapper for `_train_support_flow` and
-        overwrites self.flow_support
+        covariates, X. This function is a wrapper for `_train` and overwrites
+        self.flow_support
 
         args: 
             Y: N x D_y array specifying the outcomes. N is the number of data
@@ -72,9 +73,6 @@ class Support(object):
         
         kwargs: 
 
-            flow: flows.Flow object that specifies the architecture of the
-                flow. See `_make_flow` function within the class for details.  
-            
             batch_size: int specifyin the training data batch size
                 during training (Default: 50)
 
@@ -87,18 +85,15 @@ class Support(object):
                 during the training.
         '''
         if self.flow_support is not None: 
-            warnings.warn("Overwriting existing flow_support. clt+c if you
-                          don't want to do this")
+            warnings.warn("Overwriting existing flow_support. clt+c if you don't want to do this")
 
-        flow = self._train_support_flow(X, inverse_cdf=inverse_cdf,
-                                        flow=flow, batch_size=batch_size,
-                                        learning_rate=learning_rate,
-                                        clip_max_norm=clip_max_norm,
-                                        verbose=verbose)
+        flow = self._train(X, inverse_cdf=inverse_cdf, batch_size=batch_size,
+                           num_iter=num_iter, learning_rate=learning_rate,
+                           clip_max_norm=clip_max_norm, verbose=verbose)
         self.flow_support = flow
         return None 
 
-    def load_support_flow(self, file_flow):  
+    def load(self, file_flow):  
         ''' load flow that estimates p( X ), given the filename of the flow. 
 
         args: 
@@ -108,14 +103,12 @@ class Support(object):
         - ensembling not yet implemented
         '''
         if self.flow_support is not None: 
-            warnings.warn("Overwriting existing flow_support. clt+c if you
-                          don't want to do this!")
+            warnings.warn("Overwriting existing flow_support. clt+c if you don't want to do this!")
         self.support_flow = torch.load(file_flow, map_location=self.device)
         return None 
 
-    def _train_support_flow(self, X, inverse_cdf=False,
-                            flow=None, batch_size=50, learning_rate=5e-4,
-                            clip_max_norm=5, verbose=False): 
+    def _train(self, X, inverse_cdf=False, batch_size=50, num_iter=300,
+               learning_rate=5e-4, clip_max_norm=5, verbose=False): 
         ''' Train a normalizing flow by providing the outcome, Y, and
         covariates, X. 
 
@@ -129,7 +122,8 @@ class Support(object):
         kwargs: 
 
             flow: flows.Flow object that specifies the architecture of the
-                flow. See `_make_flow` function within the class for details.  
+                flow. See `set_architecture` function within the class for
+                details.  
             
             batch_size: int specifyin the training data batch size
                 during training (Default: 50)
@@ -150,11 +144,11 @@ class Support(object):
 
         # set up training/testing data
         Ntrain = int(0.9 * X.shape[0])
-        if verbose: print('Ntrain= %i, Nvalid= %i' % (Ntrain, data.shape[0] - Ntrain))
+        if verbose: print('Ntrain= %i, Nvalid= %i' % (Ntrain, X.shape[0] - Ntrain))
 
         # shuffle up the data 
         np.random.seed(0)
-        ind = np.arange(data.shape[0])
+        ind = np.arange(X.shape[0])
         np.random.shuffle(ind)
 
         data_train = X[ind][:Ntrain]
@@ -162,18 +156,19 @@ class Support(object):
         
         # set up data loaders
         train_loader = torch.utils.data.DataLoader(
-                torch.tensor(data_train.astype(np.float32)).to(device),
+                torch.tensor(data_train.astype(np.float32)).to(self.device),
                 batch_size=batch_size, shuffle=True)
         valid_loader = torch.utils.data.DataLoader(
-                torch.tensor(data_valid.astype(np.float32)).to(device),
+                torch.tensor(data_valid.astype(np.float32)).to(self.device),
                 batch_size=batch_size, shuffle=False)
 
         # training the flow 
         # specify the NDE architecture
-        if flow is None: 
-            # arbitrary architecture
-            flow = self._make_flow(ndim, 128, 5)
-            flow.to(self.device)
+        if self._flow is None: # arbitrary architecture
+            self.set_architecture(ndim, nhidden=128, nblocks=5)
+
+        flow = self._flow
+        flow.to(self.device)
 
         # train flow
         optimizer = optim.Adam(flow.parameters(), lr=learning_rate)
@@ -181,7 +176,11 @@ class Support(object):
         best_epoch, best_valid_loss, valid_losses = 0, np.inf, []
         best_flow = None
         patience = 20 
-        for epoch in range(num_iter):
+
+        pbar = tqdm(range(num_iter), disable=(verbose == False), desc="Epoch")
+
+        #for epoch in range(num_iter):
+        for epoch in pbar: 
             # train 
             train_loss = 0.
             for batch in train_loader: 
@@ -202,14 +201,13 @@ class Support(object):
                 valid_loss = valid_loss/len(valid_loader)
 
                 if np.isnan(valid_loss): 
-                    raise ValueError("NaN in validation loss. Check the input
-                                     data. Or try running the training again")
+                    raise ValueError("NaN in validation loss. Check the input data. Or decrease clip_max_norm")
 
                 valid_losses.append(valid_loss)
             
-            if verbose and (epoch % 10 == 0): 
-                print('Epoch: %i TRAINING Loss: %.2e VALIDATION Loss: %.2e' %
-                      (epoch, train_loss, valid_loss))
+            if verbose: 
+                pbar.set_description('TRAINING Loss: %.2e VALIDATION Loss: %.2e' % 
+                                     (train_loss, valid_loss))
                 
             if valid_loss < best_valid_loss: 
                 best_valid_loss = valid_loss
@@ -218,16 +216,16 @@ class Support(object):
             else: 
                 if epoch > best_epoch + patience: 
                     if verbose: 
-                        print('DONE: EPOCH %i, BEST EPOCH %i BEST VALIDATION Loss: %.2e' %
-                              (epoch, best_epoch, best_valid_loss))
+                        pbar.set_description('DONE: BEST EPOCH %i BEST VALIDATION Loss: %.2e' %
+                              (best_epoch, best_valid_loss))
                     break 
 
         if best_flow is None:
             raise ValueError("training failed") 
-
+        best_flow.eval() 
         return best_flow 
 
-    def _make_flow(self, ndim, nhidden, nblock):
+    def set_architecture(self, ndim, nhidden=128, nblock=5): 
         ''' make a flows.Flow object (i.e. a normalizing flow) q(X) by
         specifying the number of dimensions of X, number of hidden features,
         number of blocks. 
@@ -247,5 +245,5 @@ class Support(object):
         # single multivariate gaussian 
         base_distribution = distributions.StandardNormal(shape=[ndim])
 
-        flow = flows.Flow(transform=transform, distribution=base_distribution)
-        return flow 
+        self._flow = flows.Flow(transform=transform, distribution=base_distribution)
+        return None 

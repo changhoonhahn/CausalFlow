@@ -3,8 +3,17 @@
 and [Cano & Hahn (2024) Nature Accepted]().
 
 A machine learning framework for measuring the causal treatment effect using
-normalizing flows. 
+normalizing flows. `causalflow` estimates the Conditional Average Treatment 
+Effect (CATE) for some treatment `T`
 
 
 ## installation 
 
+
+
+## `causalflow` scenarios
+
+### Scenario A
+![plot](./doc/images/scenarioa.png)
+![plot](./doc/images/scenariob.png)
+![plot](./doc/images/scenarioc.png)

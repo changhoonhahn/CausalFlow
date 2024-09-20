@@ -21,6 +21,9 @@ CLASSIFIERS = [
 ]
 INSTALL_REQUIRES = [
         "numpy>1.18",
+        "torch", 
+        "sbi", 
+        "optuna"
 ]
 # END PROJECT SPECIFIC
 

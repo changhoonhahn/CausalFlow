@@ -120,7 +120,13 @@ class BaseCausalFlow(object):
                 show_train_summary=verbose)
 
         flow = anpe.build_posterior(p_x_y_est)
-        best_valid = anpe._summary['best_validation_log_probs'][0] 
+        # they changed the key in after v18 before v22 
+        if 'best_validation_log_probs' in anpe._summary.keys(): 
+            best_valid = anpe._summary['best_validation_log_probs'][0] 
+        elif 'best_validation_log_prob' in anpe._summary.keys(): 
+            best_valid = anpe._summary['best_validation_log_prob'][0] 
+        else: 
+            raise ValueError
         return flow, best_valid
 
     def _load_flow(self, _dir, n_ensemble=5, flow_name=None):

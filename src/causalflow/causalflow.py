@@ -118,7 +118,7 @@ class BaseCausalFlow(object):
                 show_train_summary=verbose)
 
         flow = anpe.build_posterior(p_x_y_est)
-        return flow 
+        return flow, anpe._summary['best_validation_log_prob'][0] 
 
     def _load_flow(self, _dir, n_ensemble=5, flow_name=None):
         ''' given directory load flows. By default it will load an ensemble of
@@ -259,7 +259,7 @@ class CausalFlowA(BaseCausalFlow):
         if self.flow_treated is not None: 
             warnings.warn("Overwriting existing flow_treated. clt+c if you don't want to do this")
 
-        self.flow_treated = self._train_flow(Y_treat, X_treat, **kwargs) 
+        self.flow_treated, _ = self._train_flow(Y_treat, X_treat, **kwargs) 
         return None  
     
     def train_flow_control(self, Y_cont, X_cont, **kwargs):
@@ -270,7 +270,7 @@ class CausalFlowA(BaseCausalFlow):
         if self.flow_control is not None: 
             warnings.warn("Overwriting existing flow_treated. clt+c if you don't want to do this")
 
-        self.flow_control = self._train_flow(Y_cont, X_cont, **kwargs) 
+        self.flow_control, _ = self._train_flow(Y_cont, X_cont, **kwargs) 
         return None  
 
     def load_flow_treated(self, _dir, n_ensemble=5, flow_name=None): 
@@ -327,8 +327,8 @@ class CausalFlowA(BaseCausalFlow):
         ndim = X_control.shape[1]
 
         self.support_control= Support.Support() 
-        self.support_contro.set_architecture(ndim, nhidden=nhidden, nblock=nblock) 
-        self.support_contro.train(X_control, batch_size=batch_size,
+        self.support_control.set_architecture(ndim, nhidden=nhidden, nblock=nblock) 
+        self.support_control.train(X_control, batch_size=batch_size,
                            learning_rate=learning_rate, num_iter=num_iter,
                            clip_max_norm=clip_max_norm, verbose=verbose)
         return None 
@@ -483,7 +483,7 @@ class CausalFlowB(BaseCausalFlow):
         if self.flow_base is not None: 
             warnings.warn("Overwriting existing flow_base. clt+c if you don't want to do this")
 
-        self.flow_base = self._train_flow(Y_base, X_base, **kwargs) 
+        self.flow_base, _ = self._train_flow(Y_base, X_base, **kwargs) 
         return None  
 
     def load_flow(self, _dir, n_ensemble=5, flow_name=None): 
@@ -610,7 +610,7 @@ class CausalFlowC(BaseCausalFlow):
             warnings.warn("Overwriting existing flow. clt+c if you don't want to do this")
 
         XT = np.concatenate([X, T], axis=1) 
-        self.flow = self._train_flow(Y, XT, **kwargs) 
+        self.flow, _ = self._train_flow(Y, XT, **kwargs) 
         return None  
 
     def load_flow(self, _dir, n_ensemble=5, flow_name=None): 

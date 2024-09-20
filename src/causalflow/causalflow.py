@@ -118,7 +118,8 @@ class BaseCausalFlow(object):
                 show_train_summary=verbose)
 
         flow = anpe.build_posterior(p_x_y_est)
-        return flow, anpe._summary['best_validation_log_prob'][0] 
+        best_valid = anpe._summary['best_validation_log_probs'][0] 
+        return flow, best_valid
 
     def _load_flow(self, _dir, n_ensemble=5, flow_name=None):
         ''' given directory load flows. By default it will load an ensemble of

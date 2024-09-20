@@ -21,6 +21,7 @@ CLASSIFIERS = [
 ]
 INSTALL_REQUIRES = [
         "numpy>1.18",
+        "astropy", 
         "torch", 
         "sbi", 
         "optuna"

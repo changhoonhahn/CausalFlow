@@ -87,7 +87,7 @@ class Support(object):
         if self.flow_support is not None: 
             warnings.warn("Overwriting existing flow_support. clt+c if you don't want to do this")
 
-        flow = self._train(X, inverse_cdf=inverse_cdf, batch_size=batch_size,
+        flow, _ = self._train(X, inverse_cdf=inverse_cdf, batch_size=batch_size,
                            num_iter=num_iter, learning_rate=learning_rate,
                            clip_max_norm=clip_max_norm, verbose=verbose)
         self.flow_support = flow
@@ -223,7 +223,7 @@ class Support(object):
         if best_flow is None:
             raise ValueError("training failed") 
         best_flow.eval() 
-        return best_flow 
+        return best_flow, best_valid_loss
 
     def set_architecture(self, ndim, nhidden=128, nblock=5): 
         ''' make a flows.Flow object (i.e. a normalizing flow) q(X) by

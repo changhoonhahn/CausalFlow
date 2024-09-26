@@ -106,6 +106,38 @@ class Support(object):
             warnings.warn("Overwriting existing flow_support. clt+c if you don't want to do this!")
         self.support_flow = torch.load(file_flow, map_location=self.device)
         return None 
+    
+    def load_optuna(self, study_name, study_dir, verbose=False):
+        ''' load flow that estimates p( X ) best from an optuna study
+
+        args: 
+            study_name: str, name of optuna study
+
+            study_dir: str, directory path where the optuna study is located
+
+        kwargs: 
+            n_ensemble: (int) specifying the number of flows in the ensemble. 
+
+        '''
+        if self.flow_support is not None: 
+            warnings.warn("Overwriting existing flow_support. clt+c if you don't want to do this!")
+        import optuna 
+        storage    = 'sqlite:///%s/%s/%s.db' % (study_dir, study_name, study_name)
+        study = optuna.load_study(study_name=study_name, storage=storage)
+
+        ntrial, values = [], [] 
+        for trial in study.trials:
+            if trial.values is not None:
+                ntrial.append(trial.number)
+                values.append(trial.values)
+        if verbose: print('select best flow out of %i flows' % len(ntrial))
+
+        ibest = np.array(ntrial)[np.argmin(np.concatenate(values))]
+
+        # load flows with best loss. 
+        fflow = '%s/%s/%s.%i.pt' % (study_dir, study_name, study_name, ibest)
+        self.support_flow = torch.load(fflow, map_location=self.device)
+        return None 
 
     def _train(self, X, inverse_cdf=False, batch_size=50, num_iter=300,
                learning_rate=5e-4, clip_max_norm=5, verbose=False): 

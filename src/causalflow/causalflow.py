@@ -14,6 +14,7 @@ main causalflow module
 '''
 import numpy as np 
 import warnings
+from tqdm.auto import tqdm
 
 import torch
 from torch import nn
@@ -128,26 +129,48 @@ class BaseCausalFlow(object):
         else: 
             raise ValueError
         return flow, best_valid
-
-    def _load_flow(self, _dir, n_ensemble=5, flow_name=None):
+    
+    def _load_flow(self, flow_name):
         ''' given directory load flows. By default it will load an ensemble of
         flows based on an optuna study. 
 
         args: 
-            _dir: string specifying the directory path of the flows  
+            flow_name: (str) specify the filename of the flow 
+        '''
+        flow = torch.load(fqphi, map_location=self.device)
+        return flow 
+
+    def _load_flows_optuna(self, study_name, study_dir, n_ensemble=5, verbose=False):
+        ''' given directory load flows. By default it will load an ensemble of
+        flows based on an optuna study. 
+
+        args: 
+            study_name: str, name of optuna study
+
+            study_dir: str, directory path where the optuna study is located
 
         kwargs: 
             n_ensemble: (int) specifying the number of flows in the ensemble. 
-            flow_name: (str) specify the filename of the flow. If `flow_name`
-                is specified, it will read that flow. 
         '''
-        # try to load optuna study to determine the n_ensemble best flows. 
+        import optuna 
+        storage    = 'sqlite:///%s/%s/%s.db' % (study_dir, study_name, study_name)
+        study = optuna.load_study(study_name=study_name, storage=storage)
 
-        qphis = []
-        for fqphi in glob.glob('%s/*.pt' % _dir):
-            qphi = torch.load(fqphi, map_location=device)
-            qphis.append(qphi)
-        return qphis
+        ntrial, values = [], [] 
+        for trial in study.trials:
+            if trial.values is not None:
+                ntrial.append(trial.number)
+                values.append(trial.values)
+        if verbose: print('select %i out of %i flows' % (n_ensemble, len(ntrial)))
+
+        ibest = np.array(ntrial)[np.argsort(np.concatenate(values))[:n_ensemble]]
+
+        # try to load optuna study to determine the n_ensemble best flows. 
+        flows = []
+        for i in ibest: 
+            fflow = '%s/%s/%s.%i.pt' % (study_dir, study_name, study_name, i)
+            flows.append(torch.load(fflow, map_location=self.device))
+        return flows 
 
     def set_architecture(self, arch='made', nhidden=64, ntransform=2, nblocks=2,
                          num_mixture_components=2, batch_norm=True):
@@ -165,14 +188,16 @@ class BaseCausalFlow(object):
                     use_batch_norm=batch_norm)
         return None 
     
-    def _sample(self, flow, X, Nsample=10000, progress_bar=False):
+    def _sample(self, flows, X, Nsample=10000, progress_bar=False):
         ''' sample given flow at given covariate X: Y' ~ flow( Y | X ). This is
         used for calculating the conditional average treatment effect but can
         also be used to examine the overall distribution of outcomes for the
         given flow. 
 
         args: 
-            flow: flow object  
+            flows: flow object or list of flow objects. 
+                List of flows that will be treated as an ensemble. 
+
             X: D_x 1D array specifying the covariate values to sample and
                 evaluate
         
@@ -180,15 +205,74 @@ class BaseCausalFlow(object):
             Nsample: int, specifying the number of samples to draw. More samples
                 will increase the fidelity of estimating the outcome
                 distribution. 
+
             progress_bar: bool, If True it will show a nice progress bar so it
                 looks like it's doing something
         '''
-        # sample the flow 
-        Yp = flow.sample((Nsample,), 
-                         x=torch.as_tensor(X).to(self.device), # specify covariate
-                         show_progress_bars=progress_bar)
-        Yp = Yp.detach().cpu().numpy()
-        return Yp
+        if not isinstance(flow, list): flows = [flows]
+        Nflow = len(flows)
+
+        Yp = [] 
+        for flow in flows: 
+            # sample the flow 
+            _Yp = flow.sample((int(Nsample / Nflow),), 
+                             x=torch.as_tensor(X).to(self.device), # specify covariate
+                             show_progress_bars=progress_bar)
+            _Yp = _Yp.detach().cpu().numpy()
+            Yp.append(Yp) 
+
+        return np.concatenate(np.array(y_samp), axis=0)
+
+    def _validate(self, flows, X_test, Y_test, Nsample=10000, verbose=False): 
+        ''' validate given flow using TARP (Lemos et al. 2023 
+        https://arxiv.org/abs/2302.03026v1). 
+        args: 
+            flow: flow object
+
+            X_test: N x D_x 2D array. Covariate values of the test dataset 
+
+            Y_test: N x D_y 2D array. Output values of the test dataset 
+
+        kwargs: 
+            Nasmple: int, number of samples to draw from the flow 
+
+            verbose: bool, if True print some useful things 
+
+        returns: 
+            alpha: credibility level 
+
+            ecp: expected coverage probabiilty 
+        '''
+        from tarp import get_drp_coverage
+
+        # deal with ensembles as well single flows 
+        if not isinstance(flows, list): flows = [flows]
+        Nflow = len(flows) # nubmer of flows in the ensemble 
+
+
+        # check dimensionality of outcome and covariates 
+        if len(Y_test.shape) == 1: Y_test = np.atleast_2d(Y_test).T
+        if len(X_test.shape) == 1: X_test = np.atleast_2d(X_test).T
+        Ntest = X_test.shape[0] # number of test samples 
+
+        iterer = tqdm(np.arange(Ntest), disable=(verbose == False), desc="Test Sample")
+        
+        # sample y_flow ~ q( Y | X_test ) 
+        y_flow = [] 
+        for i in iterer:
+            y_samp = []
+            for flow in flows:
+                _samp = flow.sample((int(Nsample/Nflow),),
+                        x=torch.tensor(X_test[i], dtype=torch.float32).to(self.device),
+                        show_progress_bars=False)
+                y_samp.append(_samp.detach().cpu().numpy())
+
+            y_flow.append(np.concatenate(np.array(y_samp), axis=0))
+        y_flow = np.array(y_flow)
+
+        alpha, ecp = get_drp_coverage(np.swapaxes(y_flow, 0, 1), Y_test,
+                              references="random", metric="euclidean")
+        return alpha, ecp
 
 
 class CausalFlowA(BaseCausalFlow): 
@@ -282,36 +366,56 @@ class CausalFlowA(BaseCausalFlow):
         self.flow_control, _ = self._train_flow(Y_cont, X_cont, **kwargs) 
         return None  
 
-    def load_flow_treated(self, _dir, n_ensemble=5, flow_name=None): 
-        ''' load flow that estimates p( Y | X, T=1 ), given either a directory
-        or filename of the flow. By default it will load an ensemble of
-        flows based on an optuna study. 
+    def load_flow_treated(self, flow_name): 
+        ''' load a single flow that estimates p( Y | X, T=1 ), given the path 
+        and filename of the flow.
 
         args: 
-            _dir: string specifying the directory path of the treated flows  
-
-        kwargs: 
-            n_ensemble: (int) specifying the number of flows in the ensemble. 
-            flow_name: (str) specify the filename of the flow. If `flow_name`
-                is specified, it will read that flow. 
+            flow_name: (str) specify the path and filename of the flow. 
         '''
-        self.flow_treated = self._load_flow(_dir, n_ensemble=5, flow_name=None)
+        self.flow_treated = self._load_flow(flow_name)
         return None 
 
-    def load_flow_control(self, _dir, n_ensemble=5, flow_name=None): 
-        ''' load flow that estimates p( Y | X, T=0 ), given either a directory
-        or filename of the flow. By default it will load an ensemble of
-        flows based on an optuna study. 
+    def load_flow_control(self, flow_name): 
+        ''' load a single flow that estimates p( Y | X, T=0 ), given the path 
+        and filename of the flow.
 
         args: 
-            _dir: string specifying the directory path of the control flows  
+            flow_name: (str) specify the path and filename of the flow
+        '''
+        self.flow_treated = self._load_flow(flow_name) 
+        return None 
+    
+    def load_flows_optuna_treated(self, study_name, study_dir, n_ensemble=5, verbose=False):
+        ''' load an ensemble of flows that estimates p( Y | X, T=1 ) that were 
+        trained using the optuna hyperparameter optimization framework. 
+        
+        args: 
+            study_name: str, name of optuna study
+
+            study_dir: str, directory path where the optuna study is located
 
         kwargs: 
             n_ensemble: (int) specifying the number of flows in the ensemble. 
-            flow_name: (str) specify the filename of the flow. If `flow_name`
-                is specified, it will read that flow. 
         '''
-        self.flow_treated = self._load_flow(_dir, n_ensemble=5, flow_name=None)
+        self.flow_treated = self._load_flows_optuna(study_name, study_dir, 
+                n_ensemble=n_ensemble, verbose=verbose)
+        return None 
+
+    def load_flows_optuna_control(self, study_name, study_dir, n_ensemble=5, verbose=False):
+        ''' load an ensemble of flows that estimates p( Y | X, T=1 ) that were 
+        trained using the optuna hyperparameter optimization framework. 
+        
+        args: 
+            study_name: str, name of optuna study
+
+            study_dir: str, directory path where the optuna study is located
+
+        kwargs: 
+            n_ensemble: (int) specifying the number of flows in the ensemble. 
+        '''
+        self.flow_control = self._load_flows_optuna(study_name, study_dir, 
+                n_ensemble=n_ensemble, verbose=verbose)
         return None 
 
     def train_support_treated(self, X_treated, nhidden=128, nblock=5, batch_size=50,
@@ -495,20 +599,31 @@ class CausalFlowB(BaseCausalFlow):
         self.flow_base, _ = self._train_flow(Y_base, X_base, **kwargs) 
         return None  
 
-    def load_flow(self, _dir, n_ensemble=5, flow_name=None): 
+    def load_flow(self, flow_name): 
         ''' load flow that estimates p( Y | X ) for the base sample, given
-        either a directory or filename of the flow. By default it will load an
-        ensemble of flows based on an optuna study. 
+        the path and filename of the flow. 
 
         args: 
-            _dir: string specifying the directory path of the control flows  
+            flow_name: (str) specify the path and  filename of the flow.
+        '''
+        self.flow_base = self._load_flow(flow_name)
+        return None 
+
+    def load_flows_optuna(self,  study_name, study_dir, n_ensemble=5, verbose=False):
+        ''' load an ensemble of flows that estimates p( Y | X ) for the base 
+        sample that were trained using the optuna hyperparameter optimization 
+        framework. 
+        
+        args: 
+            study_name: str, name of optuna study
+
+            study_dir: str, directory path where the optuna study is located
 
         kwargs: 
             n_ensemble: (int) specifying the number of flows in the ensemble. 
-            flow_name: (str) specify the filename of the flow. If `flow_name`
-                is specified, it will read that flow. 
         '''
-        self.flow_base = self._load_flow(_dir, n_ensemble=5, flow_name=None)
+        self.flow_base = self._load_flows_optuna(study_name, study_dir, 
+                n_ensemble=n_ensemble, verbose=verbose)
         return None 
 
     def train_support(self, X_base, nhidden=128, nblock=5, batch_size=50,
@@ -611,7 +726,7 @@ class CausalFlowC(BaseCausalFlow):
         return cate
 
     def train_flow(self, Y, X, T, **kwargs):
-        ''' Train a flow for the base sample to estimate p( Y | X ).  This is a
+        ''' Train a flow for the base sample to estimate p( Y | X, T ). This is a
         wrapper for self._train_flow. See self._train_flow for documentation
         and detail on training. 
         '''
@@ -622,20 +737,31 @@ class CausalFlowC(BaseCausalFlow):
         self.flow, _ = self._train_flow(Y, XT, **kwargs) 
         return None  
 
-    def load_flow(self, _dir, n_ensemble=5, flow_name=None): 
-        ''' load flow that estimates p( Y | X ) for the base sample, given
-        either a directory or filename of the flow. By default it will load an
-        ensemble of flows based on an optuna study. 
+    def load_flow(self, flow_name): 
+        ''' load flow that estimates p( Y | X, T ), given the path and filename 
+        of the flow. 
 
         args: 
-            _dir: string specifying the directory path of the control flows  
+            flow_name: (str) specify the path and filename of the flow
+        '''
+        self.flow = self._load_flow(flow_name)
+        return None 
+    
+    def load_flows_optuna(self,  study_name, study_dir, n_ensemble=5, verbose=False):
+        ''' load an ensemble of flows that estimates p( Y | X, T ) that were 
+        trained using the optuna hyperparameter optimization framework. 
+        
+        args: 
+            study_name: str, name of optuna study
+
+            study_dir: str, directory path where the optuna study is located
 
         kwargs: 
             n_ensemble: (int) specifying the number of flows in the ensemble. 
-            flow_name: (str) specify the filename of the flow. If `flow_name`
-                is specified, it will read that flow. 
         '''
-        raise NotImplementedError
+        self.flow = self._load_flows_optuna(study_name, study_dir, 
+                n_ensemble=n_ensemble, verbose=verbose)
+        return None 
 
     def train_support(self, X, T, nhidden=128, nblock=5, batch_size=50,
                       learning_rate=5e-4, num_iter=300, clip_max_norm=5,

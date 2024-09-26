@@ -219,7 +219,7 @@ class BaseCausalFlow(object):
                              x=torch.as_tensor(X).to(self.device), # specify covariate
                              show_progress_bars=progress_bar)
             _Yp = _Yp.detach().cpu().numpy()
-            Yp.append(Yp) 
+            Yp.append(_Yp) 
 
         return np.concatenate(np.array(Yp), axis=0)
 
@@ -524,8 +524,7 @@ class CausalFlowB(BaseCausalFlow):
         # sample p( Y | X, T=1 ) 
         Ys_base = self._sample(self.flow_base, X, Nsample=Nsample,
                                progress_bar=progress_bar)
-        if transf is not None: 
-            transf = lambda x: x 
+        if transf is None: transf = lambda x: x 
 
         Ys_base = transf(Ys_base) 
         Y_other = transf(Y) 
@@ -585,9 +584,9 @@ class CausalFlowB(BaseCausalFlow):
 
         # estimate the cate 
         if self.base == 'control': 
-            cate = np.mean(Ys_other - Ys_base) 
+            cate = np.mean(Ys_other - np.mean(Ys_base, axis=1)) 
         elif self.base == 'treated': 
-            cate = np.mean(Ys_base - Ys_other) 
+            cate = np.mean(np.mean(Ys_base, axis=1) - Ys_other) 
         return cate
 
     def train_flow(self, Y_base, X_base, **kwargs):

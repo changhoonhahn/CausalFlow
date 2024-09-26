@@ -24,7 +24,9 @@ INSTALL_REQUIRES = [
         "astropy", 
         "torch", 
         "sbi", 
-        "optuna"
+        "optuna",
+        "tarp",
+        "tqdm'
 ]
 # END PROJECT SPECIFIC
 

@@ -209,7 +209,7 @@ class BaseCausalFlow(object):
             progress_bar: bool, If True it will show a nice progress bar so it
                 looks like it's doing something
         '''
-        if not isinstance(flow, list): flows = [flows]
+        if not isinstance(flows, list): flows = [flows]
         Nflow = len(flows)
 
         Yp = [] 
@@ -219,9 +219,9 @@ class BaseCausalFlow(object):
                              x=torch.as_tensor(X).to(self.device), # specify covariate
                              show_progress_bars=progress_bar)
             _Yp = _Yp.detach().cpu().numpy()
-            Yp.append(Yp) 
+            Yp.append(_Yp) 
 
-        return np.concatenate(np.array(y_samp), axis=0)
+        return np.concatenate(np.array(Yp), axis=0)
 
     def _validate(self, flows, X_test, Y_test, Nsample=10000, verbose=False): 
         ''' validate given flow using TARP (Lemos et al. 2023 
@@ -524,8 +524,7 @@ class CausalFlowB(BaseCausalFlow):
         # sample p( Y | X, T=1 ) 
         Ys_base = self._sample(self.flow_base, X, Nsample=Nsample,
                                progress_bar=progress_bar)
-        if transf is not None: 
-            transf = lambda x: x 
+        if transf is None: transf = lambda x: x 
 
         Ys_base = transf(Ys_base) 
         Y_other = transf(Y) 
@@ -564,28 +563,30 @@ class CausalFlowB(BaseCausalFlow):
 
         # check support before evaluating CATE 
         support_base = self.support_base.check_support(Xs, Nsample=Nsupport,
-                                                       threshold=support_threshold)[0]
-        if not np.any(support_base):
-            warnings.warn("some covariate is out of the base sample support!")
+                threshold=support_threshold)
 
-        # sample p( Y | X, T=1 ) 
+        if np.any(~support_base):
+            warnings.warn("%i of %i covariates are out of the base sample support! They will be excluded" % (np.sum(~support_base), Xs.shape[0]))
+
+        # sample p( Y | X, base ) 
         Ys_base = []
-        for X in Xs: 
+        for X in Xs[support_base]: 
             _Y = self._sample(self.flow_base, X, Nsample=Nsample,
                                    progress_bar=progress_bar)
             Ys_base.append(_Y)
         Ys_base = np.array(Ys_base)
+        if np.sum(~np.isfinite(Ys_base)) > 0: raise ValueError
 
         if transf is None: transf = lambda x: x 
-
+        
         Ys_base = transf(Ys_base) 
-        Ys_other = transf(Ys) 
+        Ys_other = transf(Ys[support_base]) 
 
         # estimate the cate 
         if self.base == 'control': 
-            cate = np.mean(Ys_other - Ys_base) 
+            cate = np.mean(Ys_other - np.mean(Ys_base, axis=1)) 
         elif self.base == 'treated': 
-            cate = np.mean(Ys_base - Ys_other) 
+            cate = np.mean(np.mean(Ys_base, axis=1) - Ys_other) 
         return cate
 
     def train_flow(self, Y_base, X_base, **kwargs):

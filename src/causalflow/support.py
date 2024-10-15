@@ -104,7 +104,7 @@ class Support(object):
         '''
         if self.flow_support is not None: 
             warnings.warn("Overwriting existing flow_support. clt+c if you don't want to do this!")
-        self.support_flow = torch.load(file_flow, map_location=self.device)
+        self.flow_support = torch.load(file_flow, map_location=self.device)
         return None 
     
     def load_optuna(self, study_name, study_dir, verbose=False):
@@ -136,7 +136,7 @@ class Support(object):
 
         # load flows with best loss. 
         fflow = '%s/%s/%s.%i.pt' % (study_dir, study_name, study_name, ibest)
-        self.support_flow = torch.load(fflow, map_location=self.device)
+        self.flow_support = torch.load(fflow, map_location=self.device)
         return None 
 
     def _train(self, X, inverse_cdf=False, batch_size=50, num_iter=300,

@@ -26,7 +26,7 @@ class Support(object):
         self.flow_support = None 
         self._flow = None 
     
-    def check_support(self, X, Nsample=10000, threshold=0.95): 
+    def check_support(self, X, Nsample=10000, threshold=0.95, return_support=False): 
         ''' check support for covariates X
 
         args: 
@@ -36,6 +36,9 @@ class Support(object):
             Nsample: int specifying the number of samples.
 
             threshold: float between [0, 1], specifying the threshold. 
+
+            return_support: bool, If True return the support percentiles instead of a boolean 
+                array specifying whether X is in support. 
         '''
         # check that there is a flow 
         if self.flow_support is None: 
@@ -55,7 +58,10 @@ class Support(object):
         for i in range(X.shape[0]): 
             support[i] = np.mean(logpX[i] < logps)
             
-        return (support < threshold)
+        if return_support: 
+            return support
+        else: 
+            return (support < threshold)
 
     def train(self, X, inverse_cdf=False, batch_size=50,
               learning_rate=5e-4, num_iter=300, clip_max_norm=5,

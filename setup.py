@@ -26,7 +26,7 @@ INSTALL_REQUIRES = [
         "sbi", 
         "optuna",
         "tarp",
-        "tqdm'
+        "tqdm"
 ]
 # END PROJECT SPECIFIC
 
